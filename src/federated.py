@@ -4,6 +4,7 @@ import math
 import copy
 import numpy as np
 from agent import Agent
+from dp_agent import DPAgent
 from aggregation import Aggregation
 import torch
 import random
@@ -15,6 +16,7 @@ import time
 import argparse
 from shutil import copyfile
 import os
+from dp_analysis import setup_noise_multiplier
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -80,6 +82,17 @@ if __name__ == "__main__":
     parser.add_argument('--momentum',type=float, default=0.0)
 
     parser.add_argument('--wd', type=float, default= 1e-4)
+
+    # client group settings
+    parser.add_argument('--num_group', type=int, default=3)
+
+    # DP argument for DPAgent
+    parser.add_argument('--target_epsilon', type=float, default= 1.0)
+    parser.add_argument('--target_delta', type=float, default= 1e-5)
+    parser.add_argument('--noise_multiplier', type=float, default= 1.34765625)
+    parser.add_argument('--l2_norm_clip', type=float, default= 1.0)
+
+
     args = parser.parse_args()
         
     logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
@@ -139,13 +152,34 @@ if __name__ == "__main__":
 
     n_model_params = len(parameters_to_vector([ global_model.state_dict()[name] for name in global_model.state_dict()]))
 
+    ## NEED to update the client sampling a little bit: 
+    # use iid setting only, evenly and randomly split the clients into args.num_group groups, e.g., for fashion-mnist, we have 2000 clients per group and each group samples 10% clients per round
+
+
+    ## Set up DP noise multiplier for each group (clients within the same group will use the same noise multiplier)
+    # Complete this code
+    for i in group_ids:
+        noise_multiplier = setup_noise_multiplier(args=args, in_group_sampling_rate=args.agent_frac) 
+        # by default, in_group_sampling_rate=args.agent_frac, it will vary in future experiments. so keep a dictionary/list for the noise multipliers for different groups
+        # when initiailize the agent for each client, set the right args.noise_multiplier for them. 
+
+
     agents, agent_data_sizes = [], {}
     for _id in range(0, args.num_agents):
-        agent = Agent(_id, args, train_dataset, user_groups[_id])
-        agent_data_sizes[_id] = agent.n_data
-        agents.append(agent)
+        if args.agent == 'Agent':
+            agent = Agent(_id, args, train_dataset, user_groups[_id])
+            agent_data_sizes[_id] = agent.n_data
+            agents.append(agent)
+        elif args.agent == 'DPAgent': # need to update the initialization of DPAgent a little bit. (See DPAgent)
+            agent = DPAgent(_id, args, train_dataset, user_groups[_id])
+            agent_data_sizes[_id] = agent.n_data
+            agents.append(agent)
+
 
         logging.info('build client:{} data_num:{}'.format(_id, agent.n_data))
+
+   
+
 
     aggregator = Aggregation(agent_data_sizes, args, n_model_params)
 
@@ -157,12 +191,12 @@ if __name__ == "__main__":
         logging.info("--------round {} ------------".format(rnd))
         rnd_global_params = parameters_to_vector([ copy.deepcopy(global_model.state_dict()[name]) for name in global_model.state_dict()])
         agent_updates_dict = {}
-        chosen = np.random.choice(args.num_agents, math.floor(args.num_agents * args.agent_frac), replace=False)
+        chosen = np.random.choice(args.num_agents, math.floor(args.num_agents * args.agent_frac), replace=False) # group samples 10% clients per round to do the local sgd
         chosen = sorted(chosen)
-
+        # here may need to loop for group and then agent in each group (see aggregation.py --> agg_group_avg)
         for agent_id in chosen:
             global_model = global_model.to(args.device)
-
+            
             update = agents[agent_id].local_train(global_model, criterion, rnd)
             agent_updates_dict[agent_id] = update
             utils.vector_to_model(copy.deepcopy(rnd_global_params), global_model)

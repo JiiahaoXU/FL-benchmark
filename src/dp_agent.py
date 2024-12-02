@@ -6,12 +6,16 @@ from torch.nn.utils import parameters_to_vector
 from torch.utils.data import DataLoader
 
 
-class Agent():
-    def __init__(self, id, args, train_dataset=None, data_idxs=None):
+class DPAgent():
+    def __init__(self, id, args, num_selected_clients=None, train_dataset=None, data_idxs=None):
         self.id = id
         self.args = args
         self.error = 0
         self.hessian_metrix = []
+        # update the args setup to add these two arguments
+        # self.noise_multiplier = args.noise_multiplier
+        # self.l2_norm_clip = args.l2_norm_clip 
+        self.num_selected_clients = num_selected_clients # this is the number of selected clients within this group
 
         self.train_dataset = utils.DatasetSplit(train_dataset, data_idxs)
         # print(len(self.train_dataset))
@@ -53,7 +57,21 @@ class Agent():
         with torch.no_grad():
             after_train = parameters_to_vector(
                 [global_model.state_dict()[name] for name in global_model.state_dict()]).detach()
-            self.update = after_train - initial_global_model_params
+            update = after_train - initial_global_model_params
+
+            # Norm clipping to bound sensitivity
+            l2_norm = torch.norm(update, p=2)
+            if l2_norm > self.args.l2_norm_clip:
+                update = update * (self.args.l2_norm_clip / l2_norm)
+
+            # Add Gaussian noise for DP
+            noise = torch.normal(
+                mean=0,
+                std=self.args.noise_multiplier * self.args.l2_norm_clip/torch.sqrt(self.num_selected_clients),
+                size=update.size(),
+                device=self.args.device
+            )
+            self.update = update + noise
 
             return self.update
     
